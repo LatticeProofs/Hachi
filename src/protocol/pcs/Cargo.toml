@@ -1,0 +1,12 @@
+[package]
+name = "greyhound-pcs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+greyhound-ring       = { path = "../ring" }
+greyhound-gadget     = { path = "../gadget" }
+greyhound-commit     = { path = "../commit" }
+greyhound-proto      = { path = "../proto" }
+greyhound-transcript = { path = "../transcript" }
+rand = "0.8"

@@ -1,0 +1,9 @@
+[package]
+name = "greyhound-commit"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+greyhound-ring   = { path = "../ring" }
+greyhound-gadget = { path = "../gadget" }
+rand = "0.8"
