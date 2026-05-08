@@ -7,21 +7,16 @@ use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
 use bytemuck::cast_slice;
+use memmap2::Mmap;
 
 use crate::hachi::commit::Commitment;
 use crate::hachi::prove::SumcheckProof;
-use crate::utils::ds::{Align64, AlignedU32Vec, AlignedU8Vec};
+use crate::utils::ds::{Align64, AlignedU8Vec};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 fn write_u32_slice(w: &mut impl Write, data: &[u32]) -> io::Result<()> {
     w.write_all(cast_slice::<u32, u8>(data))
-}
-
-fn read_u32_vec(r: &mut impl Read, count: usize) -> io::Result<Vec<u32>> {
-    let mut buf = vec![0u32; count];
-    r.read_exact(bytemuck::cast_slice_mut::<u32, u8>(&mut buf))?;
-    Ok(buf)
 }
 
 fn write_u32(w: &mut impl Write, v: u32) -> io::Result<()> {
@@ -50,66 +45,96 @@ fn read_magic(r: &mut impl Read, expected: &[u8; 4]) -> io::Result<()> {
     Ok(())
 }
 
-// ── AlignedU32Vec helpers ────────────────────────────────────────────────────
-
-/// Build an [`AlignedU32Vec`] from a flat `[u32]` slice.
-fn aligned_u32_vec_from_slice(data: &[u32]) -> AlignedU32Vec {
-    let len = data.len();
-    let chunks: Vec<Align64<[u32; 16]>> = data
-        .chunks(16)
-        .map(|c| {
-            let mut arr = [0u32; 16];
-            arr[..c.len()].copy_from_slice(c);
-            Align64(arr)
-        })
-        .collect();
-    AlignedU32Vec { inner: chunks, len }
-}
-
 // ── Commitment I/O ──────────────────────────────────────────────────────────
 
 const COMMITMENT_MAGIC: &[u8; 4] = b"HCMT";
 const COMMITMENT_VERSION: u32 = 1;
 
+/// Header layout (little-endian, packed): 4-byte magic, 4-byte version,
+/// then three 4-byte lengths for `u`, `r`, `t`.
+const COMMITMENT_HEADER_BYTES: usize = 4 + 4 + 4 + 4 + 4;
+
 pub fn write_commitment(path: &Path, commitment: &Commitment) -> io::Result<()> {
     let f = File::create(path)?;
     let mut w = BufWriter::new(f);
 
+    let u = commitment.u();
+    let r = commitment.r();
+    let t = commitment.t();
+
     write_magic(&mut w, COMMITMENT_MAGIC)?;
     write_u32(&mut w, COMMITMENT_VERSION)?;
-    write_u32(&mut w, commitment.u.len as u32)?;
-    write_u32(&mut w, commitment.r.len as u32)?;
-    write_u32(&mut w, commitment.t.len as u32)?;
+    write_u32(&mut w, u.len() as u32)?;
+    write_u32(&mut w, r.len() as u32)?;
+    write_u32(&mut w, t.len() as u32)?;
 
-    write_u32_slice(&mut w, &commitment.u)?;
-    write_u32_slice(&mut w, &commitment.r)?;
-    write_u32_slice(&mut w, &commitment.t)?;
+    write_u32_slice(&mut w, u)?;
+    write_u32_slice(&mut w, r)?;
+    write_u32_slice(&mut w, t)?;
 
     w.flush()
 }
 
+/// Memory-map the commitment file and return a [`Commitment`] that borrows its
+/// `u`, `r`, `t` payloads directly from the mapped region — zero-copy. The
+/// returned [`Commitment`] keeps the mapping alive for its lifetime, so the
+/// prover can stream straight from the file without an intermediate allocation.
 pub fn read_commitment(path: &Path) -> io::Result<Commitment> {
     let f = File::open(path)?;
-    let mut r = BufReader::new(f);
 
-    read_magic(&mut r, COMMITMENT_MAGIC)?;
-    let version = read_u32(&mut r)?;
+    // SAFETY: memmap2's `Mmap::map` is `unsafe` because external mutation of
+    // the underlying file (by another process or another mapping) would create
+    // undefined behaviour for readers of this slice. We assume the commitment
+    // file is not concurrently modified for the lifetime of the returned
+    // `Commitment`, matching the rest of the I/O layer's assumptions.
+    let map = unsafe { Mmap::map(&f)? };
+
+    if map.len() < COMMITMENT_HEADER_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "commitment file truncated: header missing",
+        ));
+    }
+
+    // Parse header from the mapping rather than re-reading the file.
+    let mut header = &map[..COMMITMENT_HEADER_BYTES];
+    let mut magic = [0u8; 4];
+    header.read_exact(&mut magic)?;
+    if &magic != COMMITMENT_MAGIC {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("bad magic: expected {:?}, got {:?}", COMMITMENT_MAGIC, magic),
+        ));
+    }
+    let version = read_u32(&mut header)?;
     if version != COMMITMENT_VERSION {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("unsupported commitment version: {version}"),
         ));
     }
+    let u_len = read_u32(&mut header)? as usize;
+    let r_len = read_u32(&mut header)? as usize;
+    let t_len = read_u32(&mut header)? as usize;
 
-    let u_len = read_u32(&mut r)? as usize;
-    let r_len = read_u32(&mut r)? as usize;
-    let t_len = read_u32(&mut r)? as usize;
+    let u_start = COMMITMENT_HEADER_BYTES;
+    let r_start = u_start + u_len * 4;
+    let t_start = r_start + r_len * 4;
+    let t_end = t_start + t_len * 4;
 
-    let u = aligned_u32_vec_from_slice(&read_u32_vec(&mut r, u_len)?);
-    let rv = aligned_u32_vec_from_slice(&read_u32_vec(&mut r, r_len)?);
-    let t = aligned_u32_vec_from_slice(&read_u32_vec(&mut r, t_len)?);
+    if map.len() < t_end {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "commitment file truncated: payload shorter than declared lengths",
+        ));
+    }
 
-    Ok(Commitment { u, r: rv, t })
+    Ok(Commitment::from_mmap(
+        map,
+        u_start..r_start,
+        r_start..t_start,
+        t_start..t_end,
+    ))
 }
 
 // ── Proof I/O ───────────────────────────────────────────────────────────────
