@@ -9,9 +9,12 @@ pub type MBundle = (
     Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>, 
     Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>
 );
-pub type WBundle = (
-    AlignedU32Vec, AlignedU32Vec, AlignedU32Vec, AlignedU32Vec, 
-    AlignedU32Vec, AlignedI8Vec,  AlignedU32Vec, AlignedU32Vec, 
+/// `WBundle::4` (the `t` slot) is borrowed so the prover can feed in a slice
+/// from a memory-mapped commitment without an extra copy. The other slots are
+/// owned aligned buffers built inside the prover.
+pub type WBundle<'a> = (
+    AlignedU32Vec, AlignedU32Vec, AlignedU32Vec, AlignedU32Vec,
+    &'a [u32],     AlignedI8Vec,  AlignedU32Vec, AlignedU32Vec,
     AlignedU32Vec, AlignedU32Vec
 );
 
@@ -157,7 +160,7 @@ pub fn mle_m(i: u32, u: u32, m: &MBundle, params: &crate::SetupParams) -> [u32; 
     }
 }
 
-fn mle_W(u: u32, l: u32, w: &WBundle) -> u32 {
+fn mle_W(u: u32, l: u32, w: &WBundle<'_>) -> u32 {
     let u_usize = u as usize;
     let l_usize = l as usize;
     let k_offset = 9 << 14;
@@ -180,7 +183,7 @@ fn mle_W(u: u32, l: u32, w: &WBundle) -> u32 {
     else { 0 }
 }
 
-pub fn mle_w(u: u32, l: u32, w: &WBundle, r: &[u32]) -> u32 {
+pub fn mle_w(u: u32, l: u32, w: &WBundle<'_>, r: &[u32]) -> u32 {
     let num_witness_rings = (9 << 14) + 64; // 147520
     if u < num_witness_rings {
         mle_W(u, l, w)

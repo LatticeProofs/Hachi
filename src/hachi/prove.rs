@@ -36,7 +36,7 @@ pub struct SumcheckProof {
 pub unsafe fn prove(
     params: &SetupParams,
     s: &AlignedU8Vec,
-    mut commitment: Commitment,
+    commitment: Commitment,
     challenge: &Challenge
 ) -> (SumcheckProof, [u32; 4]) {
 
@@ -57,7 +57,7 @@ pub unsafe fn prove(
 
     // init r
     let mut r = AlignedU32Vec{inner: vec![Align64([0u32; 16]); (params.constraints * params.n) / 16], len: params.constraints * params.n };
-    r[5*params.n .. 6*params.n].copy_from_slice(&commitment.r);
+    r[5*params.n .. 6*params.n].copy_from_slice(commitment.r());
 
     // init w, z, k
     let total_len = params.height_2 * params.n;
@@ -670,7 +670,7 @@ pub unsafe fn prove(
             let w1_ptr = w1.as_ptr().add(offset);
             let w2_ptr = w2.as_ptr().add(offset);
             let w3_ptr = w3.as_ptr().add(offset);
-            let t_ptr  = commitment.t.as_ptr().add(offset);
+            let t_ptr  = commitment.t().as_ptr().add(offset);
             
             for k in 0..16 {
                 let idx_raw = c_slice[k] as u32;
@@ -770,7 +770,7 @@ pub unsafe fn prove(
     // println!("r computed: {:?}", duration);
     // let start = Instant::now();
 
-    let wbundle: WBundle = (w0, w1, w2, w3, commitment.t, z, k0, k1, k2, k3);
+    let wbundle: WBundle = (w0, w1, w2, w3, commitment.t(), z, k0, k1, k2, k3);
 
     // compute alpha
     let mut alpha_vec = vec![0u32; 4*1025];
@@ -943,7 +943,7 @@ pub unsafe fn prove(
     unsafe {
         for j in 0..params.n{
             ext_base_mla(&mut v_alpha,  &alpha_vec[4*j..4*(j+1)],  v[j]);
-            ext_base_mla(&mut u_alpha,  &alpha_vec[4*j..4*(j+1)],  commitment.u[j]);
+            ext_base_mla(&mut u_alpha,  &alpha_vec[4*j..4*(j+1)],  commitment.u()[j]);
             ext_base_mla(&mut u0_alpha, &alpha_vec[4*j..4*(j+1)], u0[j]);
             ext_base_mla(&mut u1_alpha, &alpha_vec[4*j..4*(j+1)], u1[j]);
             ext_base_mla(&mut u2_alpha, &alpha_vec[4*j..4*(j+1)], u2[j]);
